@@ -162,7 +162,7 @@ class McpApiHandler extends WorkerEntrypoint<Env> {
 	}
 }
 
-const oauthProvider = new OAuthProvider({
+export default new OAuthProvider({
 	apiRoute: "/mcp",
 	apiHandler: McpApiHandler,
 	authorizeEndpoint: "/authorize",
@@ -177,19 +177,3 @@ const oauthProvider = new OAuthProvider({
 		resource_name: "Mailrelay Elinsur MCP",
 	},
 });
-
-export default {
-	fetch(request: Request, workerEnv: Env, ctx: ExecutionContext) {
-		const url = new URL(request.url);
-		const hasBearer = request.headers.get("Authorization")?.startsWith("Bearer ");
-
-		// Allow anonymous MCP discovery so ChatGPT can enumerate tools and read
-		// their OAuth security metadata. Tool calls themselves return an MCP
-		// authentication challenge until the user connects the app.
-		if (url.pathname === "/mcp" && !hasBearer) {
-			return mcpHandler(request, workerEnv, ctx);
-		}
-
-		return oauthProvider.fetch(request, workerEnv, ctx);
-	},
-};
