@@ -1,30 +1,39 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { McpAgent } from "agents/mcp";
+import { McpServer } from "@modelcontextprotocol/server";
+import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
 import { GitHubHandler } from "./github-handler";
-
-type Props = {
-	login: string;
-	name: string | null;
-	email: string | null;
-	accessToken: string;
-};
 
 const MAILRELAY_API_BASE = "https://elinsur.ipzmarketing.com/api/v1";
 const ALLOWED_GITHUB_LOGIN = "mailrelay-mcp-elinsur";
 
+function requireAuthorizedUser() {
+	const auth = getMcpAuthContext();
+	const login = auth?.props?.login;
+	if (login !== ALLOWED_GITHUB_LOGIN) {
+		throw new Error("Usuario de GitHub no autorizado para Mailrelay Elinsur");
+	}
+	return String(login);
+}
+
 async function mailrelayGet(env: Env, path: string) {
+	const token = env.MAILRELAY_API_TOKEN;
+	if (!token) {
+		throw new Error("MAILRELAY_API_TOKEN todavía no está configurado en Cloudflare");
+	}
+
 	const response = await fetch(`${MAILRELAY_API_BASE}${path}`, {
 		headers: {
-			"X-AUTH-TOKEN": env.MAILRELAY_API_TOKEN,
+			"X-AUTH-TOKEN": token,
 			Accept: "application/json",
 		},
 	});
+
 	const text = await response.text();
 	if (!response.ok) {
 		throw new Error(`Mailrelay API error ${response.status}: ${text}`);
 	}
+
 	try {
 		return JSON.parse(text);
 	} catch {
@@ -32,49 +41,73 @@ async function mailrelayGet(env: Env, path: string) {
 	}
 }
 
-export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
-	server = new McpServer({
+function createServer() {
+	const server = new McpServer({
 		name: "Mailrelay Elinsur",
-		version: "0.1.0",
+		version: "0.2.0",
 	});
 
-	async init() {
-		if (this.props?.login !== ALLOWED_GITHUB_LOGIN) {
-			throw new Error("Usuario de GitHub no autorizado para Mailrelay Elinsur");
-		}
+	server.registerTool(
+		"estado_conexion",
+		{
+			description: "Comprueba que el usuario autenticado está autorizado para usar Mailrelay Elinsur.",
+			inputSchema: z.object({}),
+		},
+		async () => {
+			const login = requireAuthorizedUser();
+			return {
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({ conectado: true, usuario_github: login }, null, 2),
+					},
+				],
+			};
+		},
+	);
 
-		this.server.tool(
-			"listar_grupos",
-			"Lista los grupos de Mailrelay de Elinsur con su ID, nombre y cantidad de suscriptores.",
-			{},
-			async () => {
-				const data = await mailrelayGet(this.env, "/groups");
-				return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-			},
-		);
+	server.registerTool(
+		"listar_grupos",
+		{
+			description:
+				"Lista los grupos de Mailrelay de Elinsur con su ID, nombre y cantidad de suscriptores. Solo lectura.",
+			inputSchema: z.object({}),
+		},
+		async (_args, _context, env: Env) => {
+			requireAuthorizedUser();
+			const data = await mailrelayGet(env, "/groups");
+			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+		},
+	);
 
-		this.server.tool(
-			"listar_suscriptores",
-			"Lista suscriptores de Mailrelay de Elinsur. Es solo lectura.",
-			{
+	server.registerTool(
+		"listar_suscriptores",
+		{
+			description: "Lista suscriptores de Mailrelay de Elinsur. Solo lectura.",
+			inputSchema: z.object({
 				page: z.number().int().min(1).default(1),
 				per_page: z.number().int().min(1).max(100).default(30),
-			},
-			async ({ page, per_page }) => {
-				const params = new URLSearchParams({
-					page: String(page),
-					per_page: String(per_page),
-				});
-				const data = await mailrelayGet(this.env, `/subscribers?${params.toString()}`);
-				return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-			},
-		);
-	}
+			}),
+		},
+		async ({ page, per_page }, _context, env: Env) => {
+			requireAuthorizedUser();
+			const params = new URLSearchParams({
+				page: String(page),
+				per_page: String(per_page),
+			});
+			const data = await mailrelayGet(env, `/subscribers?${params.toString()}`);
+			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+		},
+	);
+
+	return server;
 }
 
+const apiHandler = createMcpHandler(createServer);
+
 export default new OAuthProvider({
-	apiHandler: MyMCP.serve("/mcp"),
 	apiRoute: "/mcp",
+	apiHandler,
 	authorizeEndpoint: "/authorize",
 	clientRegistrationEndpoint: "/register",
 	defaultHandler: GitHubHandler as any,
