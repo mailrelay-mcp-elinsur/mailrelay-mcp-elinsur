@@ -6,6 +6,9 @@ import { z } from "zod";
 import { GitHubHandler } from "./github-handler";
 
 const MAILRELAY_API_BASE = "https://elinsur.ipzmarketing.com/api/v1";
+const MCP_ORIGIN = "https://mailrelay-mcp-elinsur.fernandomurano.workers.dev";
+const MCP_RESOURCE = `${MCP_ORIGIN}/mcp`;
+const MCP_SCOPES = ["mcp:read"];
 const ALLOWED_GITHUB_LOGIN = "mailrelay-mcp-elinsur";
 
 function requireAuthorizedUser() {
@@ -51,8 +54,12 @@ function createServer() {
 	server.registerTool(
 		"estado_conexion",
 		{
+			title: "Estado de conexión",
 			description: "Comprueba que el usuario autenticado está autorizado para usar Mailrelay Elinsur.",
 			inputSchema: z.object({}),
+			securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }],
+			_meta: { securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }] },
+			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async () => {
 			const login = requireAuthorizedUser();
@@ -70,9 +77,13 @@ function createServer() {
 	server.registerTool(
 		"listar_grupos",
 		{
+			title: "Listar grupos",
 			description:
 				"Lista los grupos de Mailrelay de Elinsur con su ID, nombre y cantidad de suscriptores. Solo lectura.",
 			inputSchema: z.object({}),
+			securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }],
+			_meta: { securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }] },
+			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async () => {
 			requireAuthorizedUser();
@@ -84,11 +95,15 @@ function createServer() {
 	server.registerTool(
 		"listar_suscriptores",
 		{
+			title: "Listar suscriptores",
 			description: "Lista suscriptores de Mailrelay de Elinsur. Solo lectura.",
 			inputSchema: z.object({
 				page: z.number().int().min(1).default(1),
 				per_page: z.number().int().min(1).max(100).default(30),
 			}),
+			securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }],
+			_meta: { securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }] },
+			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async ({ page, per_page }) => {
 			requireAuthorizedUser();
@@ -116,7 +131,14 @@ export default new OAuthProvider({
 	apiRoute: "/mcp",
 	apiHandler: McpApiHandler,
 	authorizeEndpoint: "/authorize",
-	clientRegistrationEndpoint: "/register",
+	clientRegistrationEndpoint: "/oauth/register",
 	defaultHandler: GitHubHandler as any,
-	tokenEndpoint: "/token",
+	tokenEndpoint: "/oauth/token",
+	scopesSupported: MCP_SCOPES,
+	resourceMetadata: {
+		resource: MCP_RESOURCE,
+		authorization_servers: [MCP_ORIGIN],
+		scopes_supported: MCP_SCOPES,
+		resource_name: "Mailrelay Elinsur MCP",
+	},
 });
