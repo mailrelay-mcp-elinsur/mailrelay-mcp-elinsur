@@ -162,7 +162,7 @@ class McpApiHandler extends WorkerEntrypoint<Env> {
 	}
 }
 
-export default new OAuthProvider({
+const oauthProvider = new OAuthProvider({
 	apiRoute: "/mcp",
 	apiHandler: McpApiHandler,
 	authorizeEndpoint: "/authorize",
@@ -177,3 +177,61 @@ export default new OAuthProvider({
 		resource_name: "Mailrelay Elinsur MCP",
 	},
 });
+
+function pickDcrRequestFields(body: any) {
+	return {
+		client_name: body?.client_name,
+		redirect_uris: body?.redirect_uris,
+		grant_types: body?.grant_types,
+		response_types: body?.response_types,
+		token_endpoint_auth_method: body?.token_endpoint_auth_method,
+		token_endpoint_auth_methods_supported: body?.token_endpoint_auth_methods_supported,
+	};
+}
+
+function pickDcrResponseFields(body: any) {
+	return {
+		client_id: body?.client_id,
+		redirect_uris: body?.redirect_uris,
+		grant_types: body?.grant_types,
+		response_types: body?.response_types,
+		token_endpoint_auth_method: body?.token_endpoint_auth_method,
+		registration_client_uri: body?.registration_client_uri,
+		has_client_secret: Boolean(body?.client_secret),
+		client_secret_expires_at: body?.client_secret_expires_at,
+	};
+}
+
+export default {
+	async fetch(request: Request, workerEnv: Env, ctx: ExecutionContext) {
+		const url = new URL(request.url);
+
+		if (url.pathname !== "/oauth/register" || request.method !== "POST") {
+			return oauthProvider.fetch(request, workerEnv, ctx);
+		}
+
+		let requestSummary: unknown = { parse_error: true };
+		try {
+			requestSummary = pickDcrRequestFields(await request.clone().json());
+		} catch {
+			// Keep the real request untouched; this is diagnostic logging only.
+		}
+
+		const response = await oauthProvider.fetch(request, workerEnv, ctx);
+
+		let responseSummary: unknown = { parse_error: true };
+		try {
+			responseSummary = pickDcrResponseFields(await response.clone().json());
+		} catch {
+			// Do not alter the response if it is not JSON.
+		}
+
+		console.log("DCR_DIAGNOSTIC", JSON.stringify({
+			request: requestSummary,
+			response_status: response.status,
+			response: responseSummary,
+		}));
+
+		return response;
+	},
+};
