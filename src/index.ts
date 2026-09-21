@@ -156,9 +156,80 @@ function createServer() {
 
 const mcpHandler = createMcpHandler(createServer);
 
+function addRootSecuritySchemes(payload: any) {
+	const tools = payload?.result?.tools;
+	if (!Array.isArray(tools)) return payload;
+
+	for (const tool of tools) {
+		if (!tool?.securitySchemes && Array.isArray(tool?._meta?.securitySchemes)) {
+			tool.securitySchemes = tool._meta.securitySchemes;
+		}
+	}
+
+	return payload;
+}
+
+async function mcpHandlerWithSecuritySchemes(
+	request: Request,
+	workerEnv: Env,
+	ctx: ExecutionContext,
+) {
+	let method: string | undefined;
+	try {
+		const body = await request.clone().json() as { method?: string };
+		method = body?.method;
+	} catch {
+		// Non-JSON requests are passed through unchanged.
+	}
+
+	const response = await mcpHandler(request, workerEnv, ctx);
+	if (method !== "tools/list" || !response.ok) return response;
+
+	const contentType = response.headers.get("content-type") || "";
+	const headers = new Headers(response.headers);
+	headers.delete("content-length");
+
+	if (contentType.includes("text/event-stream")) {
+		const text = await response.text();
+		const patched = text
+			.split("\n")
+			.map((line) => {
+				if (!line.startsWith("data: ")) return line;
+				try {
+					const payload = JSON.parse(line.slice(6));
+					return `data: ${JSON.stringify(addRootSecuritySchemes(payload))}`;
+				} catch {
+					return line;
+				}
+			})
+			.join("\n");
+
+		return new Response(patched, {
+			status: response.status,
+			statusText: response.statusText,
+			headers,
+		});
+	}
+
+	if (contentType.includes("application/json")) {
+		try {
+			const payload = addRootSecuritySchemes(await response.json());
+			return new Response(JSON.stringify(payload), {
+				status: response.status,
+				statusText: response.statusText,
+				headers,
+			});
+		} catch {
+			return response;
+		}
+	}
+
+	return response;
+}
+
 class McpApiHandler extends WorkerEntrypoint<Env> {
 	fetch(request: Request) {
-		return mcpHandler(request, this.env, this.ctx);
+		return mcpHandlerWithSecuritySchemes(request, this.env, this.ctx);
 	}
 }
 
@@ -214,7 +285,7 @@ export default {
 			const rewrittenUrl = new URL(request.url);
 			rewrittenUrl.pathname = "/mcp";
 			const rewrittenRequest = new Request(rewrittenUrl.toString(), request);
-			return mcpHandler(rewrittenRequest, workerEnv, ctx);
+			return mcpHandlerWithSecuritySchemes(rewrittenRequest, workerEnv, ctx);
 		}
 
 		if (url.pathname !== "/oauth/register" || request.method !== "POST") {
