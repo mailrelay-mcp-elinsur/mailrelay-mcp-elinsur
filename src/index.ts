@@ -11,13 +11,42 @@ const MCP_RESOURCE = `${MCP_ORIGIN}/mcp`;
 const MCP_SCOPES = ["mcp:read"];
 const ALLOWED_GITHUB_LOGIN = "mailrelay-mcp-elinsur";
 
-function requireAuthorizedUser() {
+const OAUTH_CHALLENGE =
+	`Bearer resource_metadata="${MCP_ORIGIN}/.well-known/oauth-protected-resource/mcp", scope="mcp:read", error="invalid_token", error_description="Authentication required to use Mailrelay Elinsur"`;
+
+function getAuthorizedUser() {
 	const auth = getMcpAuthContext();
 	const login = auth?.props?.login;
-	if (login !== ALLOWED_GITHUB_LOGIN) {
-		throw new Error("Usuario de GitHub no autorizado para Mailrelay Elinsur");
-	}
+	if (!login) return null;
+	if (login !== ALLOWED_GITHUB_LOGIN) return false;
 	return String(login);
+}
+
+function authenticationRequiredResult() {
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: "Authentication required: connect Mailrelay Elinsur to continue.",
+			},
+		],
+		isError: true,
+		_meta: {
+			"mcp/www_authenticate": [OAUTH_CHALLENGE],
+		},
+	};
+}
+
+function unauthorizedUserResult() {
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: "The authenticated GitHub account is not authorized to use Mailrelay Elinsur.",
+			},
+		],
+		isError: true,
+	};
 }
 
 async function mailrelayGet(path: string) {
@@ -62,7 +91,9 @@ function createServer() {
 			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async () => {
-			const login = requireAuthorizedUser();
+			const login = getAuthorizedUser();
+			if (login === null) return authenticationRequiredResult();
+			if (login === false) return unauthorizedUserResult();
 			return {
 				content: [
 					{
@@ -86,7 +117,9 @@ function createServer() {
 			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async () => {
-			requireAuthorizedUser();
+			const login = getAuthorizedUser();
+			if (login === null) return authenticationRequiredResult();
+			if (login === false) return unauthorizedUserResult();
 			const data = await mailrelayGet("/groups");
 			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
 		},
@@ -106,7 +139,9 @@ function createServer() {
 			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async ({ page, per_page }) => {
-			requireAuthorizedUser();
+			const login = getAuthorizedUser();
+			if (login === null) return authenticationRequiredResult();
+			if (login === false) return unauthorizedUserResult();
 			const params = new URLSearchParams({
 				page: String(page),
 				per_page: String(per_page),
@@ -127,7 +162,7 @@ class McpApiHandler extends WorkerEntrypoint<Env> {
 	}
 }
 
-export default new OAuthProvider({
+const oauthProvider = new OAuthProvider({
 	apiRoute: "/mcp",
 	apiHandler: McpApiHandler,
 	authorizeEndpoint: "/authorize",
@@ -142,3 +177,19 @@ export default new OAuthProvider({
 		resource_name: "Mailrelay Elinsur MCP",
 	},
 });
+
+export default {
+	fetch(request: Request, workerEnv: Env, ctx: ExecutionContext) {
+		const url = new URL(request.url);
+		const hasBearer = request.headers.get("Authorization")?.startsWith("Bearer ");
+
+		// Allow anonymous MCP discovery so ChatGPT can enumerate tools and read
+		// their OAuth security metadata. Tool calls themselves return an MCP
+		// authentication challenge until the user connects the app.
+		if (url.pathname === "/mcp" && !hasBearer) {
+			return mcpHandler(request, workerEnv, ctx);
+		}
+
+		return oauthProvider.fetch(request, workerEnv, ctx);
+	},
+};
