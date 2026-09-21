@@ -288,6 +288,29 @@ export default {
 			return mcpHandlerWithSecuritySchemes(rewrittenRequest, workerEnv, ctx);
 		}
 
+		// Allow only MCP discovery/handshake methods without OAuth so ChatGPT can
+		// initialize the server and enumerate tools. All other MCP operations,
+		// including tools/call, remain behind OAuthProvider.
+		if (url.pathname === "/mcp" && request.method === "POST") {
+			let mcpMethod: string | undefined;
+			try {
+				const body = await request.clone().json() as { method?: string };
+				mcpMethod = body?.method;
+			} catch {
+				// Invalid/non-JSON requests continue through OAuthProvider.
+			}
+
+			const publicDiscoveryMethods = new Set([
+				"initialize",
+				"notifications/initialized",
+				"tools/list",
+			]);
+
+			if (mcpMethod && publicDiscoveryMethods.has(mcpMethod)) {
+				return mcpHandlerWithSecuritySchemes(request, workerEnv, ctx);
+			}
+		}
+
 		if (url.pathname !== "/oauth/register" || request.method !== "POST") {
 			return oauthProvider.fetch(request, workerEnv, ctx);
 		}
