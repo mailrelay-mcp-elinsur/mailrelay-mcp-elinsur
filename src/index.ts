@@ -206,6 +206,13 @@ export default {
 	async fetch(request: Request, workerEnv: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
 
+		// Diagnostic-only MCP endpoint: bypass OAuthProvider so we can verify
+		// initialize/tools/list independently of OAuth. Tool execution still
+		// enforces authentication via each tool's own auth checks.
+		if (url.pathname === "/mcp-debug") {
+			return mcpHandler(request, workerEnv, ctx);
+		}
+
 		if (url.pathname !== "/oauth/register" || request.method !== "POST") {
 			return oauthProvider.fetch(request, workerEnv, ctx);
 		}
