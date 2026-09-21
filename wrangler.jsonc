@@ -11,4 +11,9 @@
 	"observability": {
 		"enabled": true,
 	},
+	"kv_namespaces": [
+		{
+			"binding": "OAUTH_KV"
+		}
+	],
 }

@@ -1,66 +1,116 @@
+import OAuthProvider from "@cloudflare/workers-oauth-provider";
+import { env } from "cloudflare:workers";
 import { McpServer } from "@modelcontextprotocol/server";
-import { createMcpHandler } from "agents/mcp/server";
+import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
+import { GitHubHandler } from "./github-handler";
+
+const MAILRELAY_API_BASE = "https://elinsur.ipzmarketing.com/api/v1";
+const ALLOWED_GITHUB_LOGIN = "mailrelay-mcp-elinsur";
+
+function requireAuthorizedUser() {
+	const auth = getMcpAuthContext();
+	const login = auth?.props?.login;
+	if (login !== ALLOWED_GITHUB_LOGIN) {
+		throw new Error("Usuario de GitHub no autorizado para Mailrelay Elinsur");
+	}
+	return String(login);
+}
+
+async function mailrelayGet(path: string) {
+	const token = env.MAILRELAY_API_TOKEN;
+	if (!token) {
+		throw new Error("MAILRELAY_API_TOKEN todavía no está configurado en Cloudflare");
+	}
+
+	const response = await fetch(`${MAILRELAY_API_BASE}${path}`, {
+		headers: {
+			"X-AUTH-TOKEN": token,
+			Accept: "application/json",
+		},
+	});
+
+	const text = await response.text();
+	if (!response.ok) {
+		throw new Error(`Mailrelay API error ${response.status}: ${text}`);
+	}
+
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
+}
 
 function createServer() {
 	const server = new McpServer({
-		name: "Authless Calculator",
-		version: "1.0.0",
+		name: "Mailrelay Elinsur",
+		version: "0.2.0",
 	});
 
 	server.registerTool(
-		"add",
-		{ inputSchema: z.object({ a: z.number(), b: z.number() }) },
-		async ({ a, b }) => ({
-			content: [{ type: "text", text: String(a + b) }],
-		}),
+		"estado_conexion",
+		{
+			description: "Comprueba que el usuario autenticado está autorizado para usar Mailrelay Elinsur.",
+			inputSchema: z.object({}),
+		},
+		async () => {
+			const login = requireAuthorizedUser();
+			return {
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({ conectado: true, usuario_github: login }, null, 2),
+					},
+				],
+			};
+		},
 	);
 
 	server.registerTool(
-		"calculate",
+		"listar_grupos",
 		{
+			description:
+				"Lista los grupos de Mailrelay de Elinsur con su ID, nombre y cantidad de suscriptores. Solo lectura.",
+			inputSchema: z.object({}),
+		},
+		async () => {
+			requireAuthorizedUser();
+			const data = await mailrelayGet("/groups");
+			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+		},
+	);
+
+	server.registerTool(
+		"listar_suscriptores",
+		{
+			description: "Lista suscriptores de Mailrelay de Elinsur. Solo lectura.",
 			inputSchema: z.object({
-				operation: z.enum(["add", "subtract", "multiply", "divide"]),
-				a: z.number(),
-				b: z.number(),
+				page: z.number().int().min(1).default(1),
+				per_page: z.number().int().min(1).max(100).default(30),
 			}),
 		},
-		async ({ operation, a, b }) => {
-			let result: number;
-			switch (operation) {
-				case "add":
-					result = a + b;
-					break;
-				case "subtract":
-					result = a - b;
-					break;
-				case "multiply":
-					result = a * b;
-					break;
-				case "divide":
-					if (b === 0)
-						return {
-							content: [
-								{
-									type: "text",
-									text: "Error: Cannot divide by zero",
-								},
-							],
-						};
-					result = a / b;
-					break;
-			}
-			return { content: [{ type: "text", text: String(result) }] };
+		async ({ page, per_page }) => {
+			requireAuthorizedUser();
+			const params = new URLSearchParams({
+				page: String(page),
+				per_page: String(per_page),
+			});
+			const data = await mailrelayGet(`/subscribers?${params.toString()}`);
+			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
 		},
 	);
 
 	return server;
 }
 
-const handler = createMcpHandler(createServer);
+const apiHandler = createMcpHandler(createServer);
 
-export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
-		return handler(request, env, ctx);
-	},
-} satisfies ExportedHandler<Env>;
+export default new OAuthProvider({
+	apiRoute: "/mcp",
+	apiHandler,
+	authorizeEndpoint: "/authorize",
+	clientRegistrationEndpoint: "/register",
+	defaultHandler: GitHubHandler as any,
+	tokenEndpoint: "/token",
+});
