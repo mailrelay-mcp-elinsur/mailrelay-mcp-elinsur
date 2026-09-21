@@ -1,4 +1,5 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
+import { env } from "cloudflare:workers";
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
@@ -16,7 +17,7 @@ function requireAuthorizedUser() {
 	return String(login);
 }
 
-async function mailrelayGet(env: Env, path: string) {
+async function mailrelayGet(path: string) {
 	const token = env.MAILRELAY_API_TOKEN;
 	if (!token) {
 		throw new Error("MAILRELAY_API_TOKEN todavía no está configurado en Cloudflare");
@@ -73,9 +74,9 @@ function createServer() {
 				"Lista los grupos de Mailrelay de Elinsur con su ID, nombre y cantidad de suscriptores. Solo lectura.",
 			inputSchema: z.object({}),
 		},
-		async (_args, _context, env: Env) => {
+		async () => {
 			requireAuthorizedUser();
-			const data = await mailrelayGet(env, "/groups");
+			const data = await mailrelayGet("/groups");
 			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
 		},
 	);
@@ -89,13 +90,13 @@ function createServer() {
 				per_page: z.number().int().min(1).max(100).default(30),
 			}),
 		},
-		async ({ page, per_page }, _context, env: Env) => {
+		async ({ page, per_page }) => {
 			requireAuthorizedUser();
 			const params = new URLSearchParams({
 				page: String(page),
 				per_page: String(per_page),
 			});
-			const data = await mailrelayGet(env, `/subscribers?${params.toString()}`);
+			const data = await mailrelayGet(`/subscribers?${params.toString()}`);
 			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
 		},
 	);
