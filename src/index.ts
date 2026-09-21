@@ -1,5 +1,5 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import { env } from "cloudflare:workers";
+import { env, WorkerEntrypoint } from "cloudflare:workers";
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
@@ -106,15 +106,15 @@ function createServer() {
 
 const mcpHandler = createMcpHandler(createServer);
 
-const apiHandler = {
-	fetch(request: Request, env: unknown, ctx: ExecutionContext) {
-		return mcpHandler(request, env, ctx);
-	},
-};
+class McpApiHandler extends WorkerEntrypoint<Env> {
+	fetch(request: Request) {
+		return mcpHandler(request, this.env, this.ctx);
+	}
+}
 
 export default new OAuthProvider({
 	apiRoute: "/mcp",
-	apiHandler,
+	apiHandler: McpApiHandler,
 	authorizeEndpoint: "/authorize",
 	clientRegistrationEndpoint: "/register",
 	defaultHandler: GitHubHandler as any,
