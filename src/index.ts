@@ -288,29 +288,30 @@ export default {
 			return mcpHandlerWithSecuritySchemes(rewrittenRequest, workerEnv, ctx);
 		}
 
-		// Allow only MCP discovery/handshake methods without OAuth so ChatGPT can
-		// initialize the server and enumerate tools. All other MCP operations,
-		// including tools/call, remain behind OAuthProvider.
-		if (url.pathname === "/mcp" && request.method === "POST") {
+		// Tool-level OAuth: unauthenticated MCP traffic reaches the MCP handler
+		// so ChatGPT can initialize, list tools, and receive mcp/www_authenticate
+		// from an OAuth-protected tool call. Requests that already carry a Bearer
+		// token go through OAuthProvider so the token is validated and auth context
+		// is populated for the tool implementation.
+		if (url.pathname === "/mcp") {
+			const authorization = request.headers.get("authorization");
+			const hasBearer = Boolean(authorization?.toLowerCase().startsWith("bearer "));
+
 			let mcpMethod: string | undefined;
-			try {
-				const body = await request.clone().json() as { method?: string };
-				mcpMethod = body?.method;
-			} catch {
-				// Invalid/non-JSON requests continue through OAuthProvider.
+			if (request.method === "POST") {
+				try {
+					const body = await request.clone().json() as { method?: string };
+					mcpMethod = body?.method;
+				} catch {
+					// Empty/non-JSON probe requests are still passed to the MCP handler.
+				}
 			}
 
-			const publicDiscoveryMethods = new Set([
-				"initialize",
-				"notifications/initialized",
-				"tools/list",
-			]);
-
-			if (mcpMethod && publicDiscoveryMethods.has(mcpMethod)) {
+			if (!hasBearer) {
 				const response = await mcpHandlerWithSecuritySchemes(request, workerEnv, ctx);
 				console.log("MCP_DIAGNOSTIC", JSON.stringify({
-					method: mcpMethod,
-					route: "public-discovery",
+					method: mcpMethod ?? null,
+					route: "mcp-handler-no-bearer",
 					status: response.status,
 				}));
 				return response;
@@ -319,7 +320,7 @@ export default {
 			const response = await oauthProvider.fetch(request, workerEnv, ctx);
 			console.log("MCP_DIAGNOSTIC", JSON.stringify({
 				method: mcpMethod ?? null,
-				route: "oauth-provider",
+				route: "oauth-provider-bearer",
 				status: response.status,
 			}));
 			return response;
