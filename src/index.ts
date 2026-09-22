@@ -307,8 +307,22 @@ export default {
 			]);
 
 			if (mcpMethod && publicDiscoveryMethods.has(mcpMethod)) {
-				return mcpHandlerWithSecuritySchemes(request, workerEnv, ctx);
+				const response = await mcpHandlerWithSecuritySchemes(request, workerEnv, ctx);
+				console.log("MCP_DIAGNOSTIC", JSON.stringify({
+					method: mcpMethod,
+					route: "public-discovery",
+					status: response.status,
+				}));
+				return response;
 			}
+
+			const response = await oauthProvider.fetch(request, workerEnv, ctx);
+			console.log("MCP_DIAGNOSTIC", JSON.stringify({
+				method: mcpMethod ?? null,
+				route: "oauth-provider",
+				status: response.status,
+			}));
+			return response;
 		}
 
 		if (url.pathname !== "/oauth/register" || request.method !== "POST") {
