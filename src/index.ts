@@ -74,7 +74,14 @@ async function mailrelayGet(path: string) {
 	}
 }
 
-function createServer() {
+type ServerAccessMode = "oauth" | "internal";
+
+function createServer(accessMode: ServerAccessMode = "oauth") {
+	const toolSecuritySchemes: any[] =
+		accessMode === "internal"
+			? [{ type: "noauth" }]
+			: [{ type: "oauth2", scopes: MCP_SCOPES }];
+
 	const server = new McpServer({
 		name: "Mailrelay Elinsur",
 		version: "0.2.0",
@@ -86,12 +93,12 @@ function createServer() {
 			title: "Estado de conexión",
 			description: "Comprueba que el usuario autenticado está autorizado para usar Mailrelay Elinsur.",
 			inputSchema: z.object({}),
-			securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }],
-			_meta: { securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }] },
+			securitySchemes: toolSecuritySchemes,
+			_meta: { securitySchemes: toolSecuritySchemes },
 			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async () => {
-			const login = getAuthorizedUser();
+			const login = accessMode === "oauth" ? getAuthorizedUser() : "internal";
 			if (login === null) return authenticationRequiredResult();
 			if (login === false) return unauthorizedUserResult();
 			return {
@@ -112,12 +119,12 @@ function createServer() {
 			description:
 				"Lista los grupos de Mailrelay de Elinsur con su ID, nombre y cantidad de suscriptores. Solo lectura.",
 			inputSchema: z.object({}),
-			securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }],
-			_meta: { securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }] },
+			securitySchemes: toolSecuritySchemes,
+			_meta: { securitySchemes: toolSecuritySchemes },
 			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async () => {
-			const login = getAuthorizedUser();
+			const login = accessMode === "oauth" ? getAuthorizedUser() : "internal";
 			if (login === null) return authenticationRequiredResult();
 			if (login === false) return unauthorizedUserResult();
 			const data = await mailrelayGet("/groups");
@@ -134,12 +141,12 @@ function createServer() {
 				page: z.number().int().min(1).default(1),
 				per_page: z.number().int().min(1).max(100).default(30),
 			}),
-			securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }],
-			_meta: { securitySchemes: [{ type: "oauth2", scopes: MCP_SCOPES }] },
+			securitySchemes: toolSecuritySchemes,
+			_meta: { securitySchemes: toolSecuritySchemes },
 			annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 		},
 		async ({ page, per_page }) => {
-			const login = getAuthorizedUser();
+			const login = accessMode === "oauth" ? getAuthorizedUser() : "internal";
 			if (login === null) return authenticationRequiredResult();
 			if (login === false) return unauthorizedUserResult();
 			const params = new URLSearchParams({
@@ -154,7 +161,8 @@ function createServer() {
 	return server;
 }
 
-const mcpHandler = createMcpHandler(createServer);
+const mcpHandler = createMcpHandler(() => createServer("oauth"));
+const internalMcpHandler = createMcpHandler(() => createServer("internal"));
 
 function addRootSecuritySchemes(payload: any) {
 	const tools = payload?.result?.tools;
@@ -173,6 +181,7 @@ async function mcpHandlerWithSecuritySchemes(
 	request: Request,
 	workerEnv: Env,
 	ctx: ExecutionContext,
+	handler: typeof mcpHandler = mcpHandler,
 ) {
 	let method: string | undefined;
 	try {
@@ -182,7 +191,7 @@ async function mcpHandlerWithSecuritySchemes(
 		// Non-JSON requests are passed through unchanged.
 	}
 
-	const response = await mcpHandler(request, workerEnv, ctx);
+	const response = await handler(request, workerEnv, ctx);
 	if (method !== "tools/list" || !response.ok) return response;
 
 	const contentType = response.headers.get("content-type") || "";
@@ -296,6 +305,62 @@ function normalizeMcpRequestHeaders(request: Request) {
 export default {
 	async fetch(request: Request, workerEnv: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
+
+		// Temporary internal no-OAuth endpoint for ChatGPT developer testing.
+		// Access is restricted by a Cloudflare secret embedded in the path:
+		// /mcp-interno/<MCP_INTERNAL_KEY>. The internal handler exposes only the
+		// existing read-only tools and advertises them as noauth to ChatGPT.
+		if (url.pathname.startsWith("/mcp-interno/")) {
+			const suppliedKey = decodeURIComponent(
+				url.pathname.slice("/mcp-interno/".length),
+			);
+			const internalKey = (workerEnv as any).MCP_INTERNAL_KEY as string | undefined;
+
+			if (!internalKey || suppliedKey !== internalKey) {
+				return new Response("Not Found", { status: 404 });
+			}
+
+			const rewrittenUrl = new URL(request.url);
+			rewrittenUrl.pathname = "/mcp";
+			const rewrittenRequest = normalizeMcpRequestHeaders(
+				new Request(rewrittenUrl.toString(), request),
+			);
+
+			if (
+				rewrittenRequest.method === "POST" &&
+				rewrittenRequest.headers.get("content-length") === "0"
+			) {
+				console.log("MCP_INTERNAL_DIAGNOSTIC", JSON.stringify({
+					method: null,
+					route: "empty-probe",
+					status: 204,
+				}));
+				return new Response(null, { status: 204 });
+			}
+
+			let internalMethod: string | undefined;
+			if (rewrittenRequest.method === "POST") {
+				try {
+					const body = await rewrittenRequest.clone().json() as { method?: string };
+					internalMethod = body?.method;
+				} catch {
+					// Let the MCP handler produce the protocol error for malformed bodies.
+				}
+			}
+
+			const response = await mcpHandlerWithSecuritySchemes(
+				rewrittenRequest,
+				workerEnv,
+				ctx,
+				internalMcpHandler,
+			);
+			console.log("MCP_INTERNAL_DIAGNOSTIC", JSON.stringify({
+				method: internalMethod ?? null,
+				route: "internal-key",
+				status: response.status,
+			}));
+			return response;
+		}
 
 		// Diagnostic-only MCP endpoint: bypass OAuthProvider so we can verify
 		// initialize/tools/list independently of OAuth. The MCP handler itself
