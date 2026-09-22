@@ -306,11 +306,25 @@ export default {
 	async fetch(request: Request, workerEnv: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
 
-		// The OAuth provider (v0.9.1) answers path-suffixed protected-resource
-		// metadata for any path on this origin. That makes ChatGPT incorrectly
-		// classify /mcp-interno/<key> as OAuth-protected. Explicitly return 404
-		// for the internal noauth endpoint's RFC 9728 metadata probe.
-		if (url.pathname.startsWith("/.well-known/oauth-protected-resource/mcp-interno/")) {
+		// TEMPORARY INTERNAL/NOAUTH MODE.
+		// ChatGPT probes OAuth discovery at the origin level as well as at the
+		// endpoint path. Because this same workers.dev origin also hosts the OAuth
+		// provider for /mcp, the presence of those metadata documents causes the
+		// internal endpoint to be classified as OAuth-protected. While we validate
+		// the internal read-only connector, suppress OAuth discovery on this origin.
+		// The OAuth implementation remains in the codebase and can be re-enabled
+		// later (ideally on a separate hostname/Worker).
+		const isOAuthDiscoveryPath =
+			url.pathname === "/.well-known/oauth-protected-resource" ||
+			url.pathname === "/.well-known/oauth-authorization-server" ||
+			url.pathname === "/.well-known/openid-configuration" ||
+			url.pathname.startsWith("/.well-known/oauth-protected-resource/mcp-interno/") ||
+			(
+				url.pathname.startsWith("/mcp-interno/") &&
+				url.pathname.includes("/.well-known/oauth-protected-resource")
+			);
+
+		if (isOAuthDiscoveryPath) {
 			return new Response(null, {
 				status: 404,
 				headers: {
