@@ -322,6 +322,24 @@ export default {
 			const authorization = normalizedRequest.headers.get("authorization");
 			const hasBearer = Boolean(authorization?.toLowerCase().startsWith("bearer "));
 
+			// ChatGPT may first send an empty POST as a reachability/auth probe.
+			// It is not an MCP JSON-RPC message, so do not send it into the MCP
+			// parser (which correctly rejects an empty JSON body). A 204 keeps
+			// this compatibility probe separate from real MCP traffic.
+			const contentLength = normalizedRequest.headers.get("content-length");
+			if (
+				normalizedRequest.method === "POST" &&
+				!hasBearer &&
+				contentLength === "0"
+			) {
+				console.log("MCP_DIAGNOSTIC", JSON.stringify({
+					method: null,
+					route: "empty-probe",
+					status: 204,
+				}));
+				return new Response(null, { status: 204 });
+			}
+
 			let mcpMethod: string | undefined;
 			if (normalizedRequest.method === "POST") {
 				try {
