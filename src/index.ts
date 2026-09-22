@@ -306,6 +306,20 @@ export default {
 	async fetch(request: Request, workerEnv: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
 
+		// The OAuth provider (v0.9.1) answers path-suffixed protected-resource
+		// metadata for any path on this origin. That makes ChatGPT incorrectly
+		// classify /mcp-interno/<key> as OAuth-protected. Explicitly return 404
+		// for the internal noauth endpoint's RFC 9728 metadata probe.
+		if (url.pathname.startsWith("/.well-known/oauth-protected-resource/mcp-interno/")) {
+			return new Response(null, {
+				status: 404,
+				headers: {
+					"Cache-Control": "no-store",
+					Pragma: "no-cache",
+				},
+			});
+		}
+
 		// Temporary internal no-OAuth endpoint for ChatGPT developer testing.
 		// Access is restricted by a Cloudflare secret embedded in the path:
 		// /mcp-interno/<MCP_INTERNAL_KEY>. The internal handler exposes only the
