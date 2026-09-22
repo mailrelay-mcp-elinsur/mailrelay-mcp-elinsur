@@ -273,6 +273,26 @@ function pickDcrResponseFields(body: any) {
 	};
 }
 
+function normalizeMcpRequestHeaders(request: Request) {
+	const headers = new Headers(request.headers);
+	const accept = headers.get("accept");
+	const contentType = headers.get("content-type");
+
+	if (!accept || accept.trim() === "*/*") {
+		headers.set("accept", "application/json, text/event-stream");
+	}
+
+	if (
+		!contentType ||
+		contentType.toLowerCase().startsWith("application/octet-stream") ||
+		contentType.toLowerCase().startsWith("text/octet-stream")
+	) {
+		headers.set("content-type", "application/json");
+	}
+
+	return new Request(request, { headers });
+}
+
 export default {
 	async fetch(request: Request, workerEnv: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
@@ -294,13 +314,18 @@ export default {
 		// token go through OAuthProvider so the token is validated and auth context
 		// is populated for the tool implementation.
 		if (url.pathname === "/mcp") {
-			const authorization = request.headers.get("authorization");
+			// ChatGPT's tool-scanning probe may send Accept: */* and an
+			// octet-stream Content-Type. Normalize those transport headers before
+			// the MCP SDK validates the request.
+			const normalizedRequest = normalizeMcpRequestHeaders(request);
+
+			const authorization = normalizedRequest.headers.get("authorization");
 			const hasBearer = Boolean(authorization?.toLowerCase().startsWith("bearer "));
 
 			let mcpMethod: string | undefined;
-			if (request.method === "POST") {
+			if (normalizedRequest.method === "POST") {
 				try {
-					const body = await request.clone().json() as { method?: string };
+					const body = await normalizedRequest.clone().json() as { method?: string };
 					mcpMethod = body?.method;
 				} catch {
 					// Empty/non-JSON probe requests are still passed to the MCP handler.
@@ -308,7 +333,7 @@ export default {
 			}
 
 			if (!hasBearer) {
-				const response = await mcpHandlerWithSecuritySchemes(request, workerEnv, ctx);
+				const response = await mcpHandlerWithSecuritySchemes(normalizedRequest, workerEnv, ctx);
 				console.log("MCP_DIAGNOSTIC", JSON.stringify({
 					method: mcpMethod ?? null,
 					route: "mcp-handler-no-bearer",
@@ -317,7 +342,7 @@ export default {
 				return response;
 			}
 
-			const response = await oauthProvider.fetch(request, workerEnv, ctx);
+			const response = await oauthProvider.fetch(normalizedRequest, workerEnv, ctx);
 			console.log("MCP_DIAGNOSTIC", JSON.stringify({
 				method: mcpMethod ?? null,
 				route: "oauth-provider-bearer",
